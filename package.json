@@ -10,6 +10,7 @@
   "scripts": {
     "check": "bun fmt --check && bun lint",
     "fix": "bun lint --fix && bun fmt",
+    "release": "bun run script/release.ts",
     "typecheck": "bun check --no-script"
   },
   "dependencies": {

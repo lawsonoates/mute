@@ -4,6 +4,18 @@ Hide a repository's skills, MCP servers and agent instructions (`AGENTS.md`, `CL
 
 ## Install
 
+Download the Apple Silicon binary from the latest release. The repository is private, so this uses your `gh` login.
+
+```bash
+mkdir -p ~/.local/bin
+gh release download -R lawsonoates/mute -p mute-darwin-arm64 -O ~/.local/bin/mute --clobber
+chmod +x ~/.local/bin/mute
+```
+
+Make sure `~/.local/bin` is on your `PATH`. Run the same commands to update.
+
+To run from source instead:
+
 ```bash
 git clone git@github.com:lawsonoates/mute.git ~/mute
 cd ~/mute
@@ -11,7 +23,7 @@ bun install
 bun link
 ```
 
-`bun link` puts `mute` in `~/.bun/bin` as links to this checkout. Make sure that directory is on your `PATH`. Don't use `bun install -g`, because it ignores the dependency override in `package.json` and the CLI crashes on start.
+`bun link` puts `mute` in `~/.bun/bin` as a link to this checkout. Don't use `bun install -g`, because it ignores the dependency override in `package.json` and the CLI crashes on start.
 
 ## Usage
 
@@ -58,3 +70,10 @@ bun run check       # format and lint
 bun run fix
 bun run typecheck
 ```
+
+## Release
+
+1. Bump `version` in `package.json` and push the commit to `master`.
+2. Run `bun run release` on an Apple Silicon Mac.
+
+The script refuses to run unless you're on `master` with a clean tree that matches `origin/master`, and the version's tag doesn't exist yet. It then runs the checks and tests, compiles `dist/mute-darwin-arm64`, checks the binary reports the right version, pushes a `v<version>` tag and creates a GitHub release with the binary attached.
