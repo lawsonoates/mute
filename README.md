@@ -25,6 +25,14 @@ bun link
 
 `bun link` puts `mute` in `~/.bun/bin` as a link to this checkout. Don't use `bun install -g`, because it ignores the dependency override in `package.json` and the CLI crashes on start.
 
+## Agent skill
+
+[`skills/mute/SKILL.md`](skills/mute/SKILL.md) tells coding agents why files are missing and when to run `mute apply`. Install it globally, not in the repositories you mute:
+
+```bash
+bunx skills add lawsonoates/mute -g
+```
+
 ## Usage
 
 Run these anywhere inside a repository.
