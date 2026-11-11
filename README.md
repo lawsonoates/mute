@@ -39,12 +39,14 @@ Run these anywhere inside a repository.
 
 ```bash
 mute skill 'fd-*' sync-prep   # hide skills by name or glob
+mute keep sync-prep            # keep skills visible that a muted glob matches
 mute mcp linear notion         # remove MCP servers from the repo's MCP configs
 mute instructions              # hide every AGENTS.md and CLAUDE.md
 mute status                    # show what is muted and whether this checkout matches
-mute apply                     # re-apply the profile, such as after a pull
+mute apply                     # re-apply the profile by hand
 
 mute restore skill 'fd-*'      # restore by the exact entry you muted
+mute restore keep sync-prep
 mute restore mcp linear
 mute restore instructions
 mute restore all               # clear the profile and restore this checkout
@@ -53,20 +55,27 @@ mute r all                     # r is short for restore
 
 Names and globs must match something tracked in the repository. `mute status` lists the entries you have muted.
 
+To hide every skill except a few, mute them all and keep the ones you want. Skills added upstream later are hidden too.
+
+```bash
+mute skill '*'
+mute keep good-update code-review
+```
+
 ## How it works
 
 - **Skills and instructions** are hidden with sparse checkout (`git sparse-checkout set --no-cone`). Git leaves the files out of your working tree but keeps them in the index, so `git status` stays clean and nothing is staged as deleted.
 - **MCP servers** are removed from local copies of `.mcp.json`, `.cursor/mcp.json` and `.codex/config.toml`. Those files are marked skip-worktree, so git ignores your edited copy.
-- **Skill roots** checked: `.agents/skills`, `.claude/skills`, `.codex/skills`, `.cursor/skills`, `.opencode/skills`.
+- **Skill roots** checked: `.agents/skills`, `.claude/skills`, `.codex/skills`, `.cursor/skills`, `.opencode/skills`. A skill is a directory in a root, or a symlink there to a skill kept elsewhere in the repository. Hiding a symlinked skill removes the link and leaves its target in place.
 - **Profiles** are stored per repository at `~/.config/mute/<host>/<owner>/<repo>.json`, keyed by the `origin` remote, so every clone and worktree shares one profile. Set `MUTE_HOME` to store them somewhere else.
 
 ## Caveats
 
-- **Current worktree only.** `mute` changes only the worktree you run them in. Other worktrees pick up the profile change after `mute apply`.
-- **Git hooks.** mute adds hooks to the repository's shared git config (`hook.mute`, `hook.mute-pre-commit`, `hook.mute-post-commit`), so every worktree runs them. They run alongside hooks from `core.hooksPath`, such as husky's, and only warn on failure. They point at the mute binary that set them up, so run `mute apply` once after moving that binary. `mute restore all` removes them.
+- **Current worktree only.** `mute` changes only the worktree you run it in. Other worktrees pick up the profile change on their next checkout or merge, or after `mute apply`.
+- **Git hooks.** mute adds hooks to the repository's shared git config (`hook.mute`, `hook.mute-post-merge`, `hook.mute-pre-commit`, `hook.mute-post-commit`), so every worktree runs them. They run alongside hooks from `core.hooksPath`, such as husky's, and only warn on failure. They need a git version that runs hooks from config (`hook.<name>.command`). They point at the mute binary that set them up, so run `mute apply` once after moving that binary. `mute restore all` removes them.
 - **New worktrees.** `git worktree add` copies the sparse patterns but not the edited MCP configs. The `post-checkout` hook applies the profile, so new worktrees and later checkouts match it on their own.
 - **Commit checks.** Hooks such as husky's may read files that mute hides. The `pre-commit` hook writes hidden files back to disk before those hooks run, and the `post-commit` hook removes them again. They stay out of `git status` throughout. If a commit fails its checks, the files stay on disk until the next commit, checkout or `mute apply`. Agents can read them while they are there.
-- **After a pull.** If upstream changes a muted MCP config, your local copy stays as it was. `mute status` reports it as out of date until you run `mute apply`.
+- **After a pull.** The `post-merge` and `post-checkout` hooks apply the profile again, so skills added upstream are hidden and edited MCP configs pick up upstream changes. Without the hooks, `mute status` reports the checkout as out of date until you run `mute apply`.
 - **Local changes.** mute refuses to edit an MCP config that has uncommitted changes.
 - **Existing sparse checkout.** mute refuses to touch a worktree that uses sparse checkout for anything else.
 - **Codex inline tables.** MCP servers defined as inline tables in `.codex/config.toml` can't be removed. Only `[mcp_servers.<name>]` tables are supported.

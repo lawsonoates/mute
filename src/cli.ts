@@ -8,7 +8,7 @@ import {
   type Plan,
   Unmatched,
 } from "./checkout";
-import { type Profile, Service as Store } from "./profile";
+import { empty, type Profile, Service as Store } from "./profile";
 
 const quote = (part: string) => `'${part.replaceAll("'", `'\\''`)}'`;
 
@@ -26,11 +26,18 @@ const self = () => {
 
 export class NotMuted extends Schema.TaggedError<NotMuted>()("NotMuted", {
   kind: Schema.String,
-
   name: Schema.String,
 }) {
   override get message() {
     return `Not muted: ${this.kind} ${this.name}. Run \`mute status\` to list muted entries.`;
+  }
+}
+
+export class NotKept extends Schema.TaggedError<NotKept>()("NotKept", {
+  name: Schema.String,
+}) {
+  override get message() {
+    return `Not kept: ${this.name}. Run \`mute status\` to list kept entries.`;
   }
 }
 
@@ -90,15 +97,15 @@ const known = (
     { discard: true },
   );
 
-const without = (
-  kind: string,
+const without = <E>(
   current: readonly string[],
   removed: readonly string[],
+  miss: (name: string) => E,
 ) =>
   Effect.gen(function* () {
     const missing = removed.find((name) => !current.includes(name));
     if (missing !== undefined) {
-      return yield* new NotMuted({ kind, name: missing });
+      return yield* Effect.fail(miss(missing));
     }
     return current.filter((name) => !removed.includes(name));
   });
@@ -113,6 +120,19 @@ const skill = Command.make("skill", { names: names("names") }, (input) =>
 ).pipe(
   Command.withDescription(
     "Hide skill directories from this checkout. Globs such as 'fd-*' are allowed.",
+  ),
+);
+
+const keep = Command.make("keep", { names: names("names") }, (input) =>
+  update((profile) =>
+    Effect.gen(function* () {
+      yield* known("skill", yield* (yield* Checkout).skills, input.names);
+      return { ...profile, keep: [...profile.keep, ...input.names] };
+    }),
+  ),
+).pipe(
+  Command.withDescription(
+    "Keep skills visible that a muted glob matches, such as after `mute skill '*'`",
   ),
 );
 
@@ -137,7 +157,7 @@ const apply = Command.make("apply", {}, () =>
   update((profile) => Effect.succeed(profile)),
 ).pipe(
   Command.withDescription(
-    "Apply the repository's profile to this checkout, such as in a new worktree",
+    "Apply the repository's profile to this checkout. The git hooks that mute sets up do this after a checkout or merge.",
   ),
 );
 
@@ -156,7 +176,7 @@ const hook = Command.make(
         yield* checkout.reveal;
         return;
       }
-      if (input.event === "post-checkout") {
+      if (input.event !== "post-commit") {
         const store = yield* Store;
         const profile = yield* store.load(yield* checkout.repo);
         const state = yield* checkout.status(profile);
@@ -176,7 +196,7 @@ const hook = Command.make(
     ),
 ).pipe(
   Command.withDescription(
-    "Run by the git hooks that mute sets up. Applies the profile after a checkout, and puts hidden files back on disk while a commit's checks run.",
+    "Run by the git hooks that mute sets up. Applies the profile after a checkout or merge, and puts hidden files back on disk while a commit's checks run.",
   ),
 );
 
@@ -214,6 +234,7 @@ const status = Command.make("status", {}, () =>
         `repo: ${repo}`,
         `profile: ${store.path(repo)}`,
         `skills: ${list(skills, profile.skills)}`,
+        `keep: ${list(skills, profile.keep)}`,
         `mcp: ${list(servers, profile.mcps)}`,
         `instructions: ${profile.instructions ? "muted" : "none"}`,
         `checkout: ${checked}`,
@@ -228,17 +249,29 @@ const status = Command.make("status", {}, () =>
 
 const unskill = Command.make("skill", { names: names("names") }, (input) =>
   update((profile) =>
-    without("skill", profile.skills, input.names).pipe(
-      Effect.map((skills) => ({ ...profile, skills })),
-    ),
+    without(
+      profile.skills,
+      input.names,
+      (name) => new NotMuted({ kind: "skill", name }),
+    ).pipe(Effect.map((skills) => ({ ...profile, skills }))),
   ),
 ).pipe(Command.withDescription("Restore skills muted by these exact entries"));
 
+const unkeep = Command.make("keep", { names: names("names") }, (input) =>
+  update((profile) =>
+    without(profile.keep, input.names, (name) => new NotKept({ name })).pipe(
+      Effect.map((kept) => ({ ...profile, keep: kept })),
+    ),
+  ),
+).pipe(Command.withDescription("Stop keeping these exact entries visible"));
+
 const unmcp = Command.make("mcp", { names: names("names") }, (input) =>
   update((profile) =>
-    without("MCP server", profile.mcps, input.names).pipe(
-      Effect.map((mcps) => ({ ...profile, mcps })),
-    ),
+    without(
+      profile.mcps,
+      input.names,
+      (name) => new NotMuted({ kind: "MCP server", name }),
+    ).pipe(Effect.map((mcps) => ({ ...profile, mcps }))),
   ),
 ).pipe(
   Command.withDescription("Restore MCP servers muted by these exact entries"),
@@ -249,7 +282,7 @@ const uninstructions = Command.make("instructions", {}, () =>
 ).pipe(Command.withDescription("Restore every AGENTS.md and CLAUDE.md"));
 
 const all = Command.make("all", {}, () =>
-  update(() => Effect.succeed({ instructions: false, mcps: [], skills: [] })),
+  update(() => Effect.succeed(empty)),
 ).pipe(
   Command.withDescription(
     "Clear the repository's profile and restore this checkout. Other worktrees keep their state until `mute apply`.",
@@ -259,7 +292,7 @@ const all = Command.make("all", {}, () =>
 const restore = Command.make("restore").pipe(
   Command.withAlias("r"),
   Command.withDescription("Restore what mute hid from this checkout"),
-  Command.withSubcommands([unskill, unmcp, uninstructions, all]),
+  Command.withSubcommands([unskill, unkeep, unmcp, uninstructions, all]),
 );
 
 export const mute = Command.make("mute").pipe(
@@ -268,6 +301,7 @@ export const mute = Command.make("mute").pipe(
   ),
   Command.withSubcommands([
     skill,
+    keep,
     mcp,
     instructions,
     apply,

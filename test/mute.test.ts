@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { key } from "../src/profile";
@@ -119,25 +119,75 @@ describe("mute", () => {
     expect(cli(down, "status").stdout).toContain("checkout: applied");
   });
 
-  test("keeps overlays across pulls and refreshes them on apply", async () => {
+  test("hides a skill that is a symlink to one kept elsewhere", async () => {
     const up = join(dir, "up");
     const down = join(dir, "down");
+    await write(join(up, "pkg/skills/linked/SKILL.md"), "linked");
+    await symlink("../../pkg/skills/linked", join(up, ".claude/skills/linked"));
+    git(up, "add", "-A");
+    git(up, "commit", "-qm", "link");
+    git(down, "pull", "-q");
+
+    expect(cli(down, "skill", "linked").code).toBe(0);
+    expect(await exists(join(down, ".claude/skills/linked"))).toBe(false);
+    expect(await exists(join(down, "pkg/skills/linked/SKILL.md"))).toBe(true);
+    expect(git(down, "status", "--porcelain")).toBe("");
+
+    expect(cli(down, "restore", "skill", "linked").code).toBe(0);
+    expect(await exists(join(down, ".claude/skills/linked/SKILL.md"))).toBe(
+      true,
+    );
+  });
+
+  test("keeps named skills visible when a glob mutes the rest", async () => {
+    const down = join(dir, "down");
+    expect(cli(down, "skill", "*").code).toBe(0);
+    expect(cli(down, "keep", "keep").code).toBe(0);
+
+    expect(await exists(join(down, ".claude/skills/fd-a/SKILL.md"))).toBe(
+      false,
+    );
+    expect(await exists(join(down, ".claude/skills/keep/SKILL.md"))).toBe(true);
+    expect(cli(down, "status").stdout).toContain("keep: keep (1)");
+
+    expect(cli(down, "restore", "keep", "nope").stderr).toContain(
+      "Not kept: nope",
+    );
+    expect(cli(down, "restore", "keep", "keep").code).toBe(0);
+    expect(await exists(join(down, ".claude/skills/keep/SKILL.md"))).toBe(
+      false,
+    );
+  });
+
+  test.each([
+    ["a fast-forward pull", []],
+    ["a pull that rebases local commits", ["local"]],
+  ])("applies the profile after %s", async (_, commits) => {
+    const up = join(dir, "up");
+    const down = join(dir, "down");
+    cli(down, "skill", "fd-*");
     cli(down, "mcp", "chrome-devtools");
+    for (const message of commits) {
+      await write(join(down, "pkg/index.ts"), message);
+      git(down, "commit", "-qam", message);
+    }
+    await write(join(up, ".claude/skills/fd-c/SKILL.md"), "fd-c");
     await write(
       join(up, ".mcp.json"),
       JSON.stringify({
         mcpServers: { "chrome-devtools": {}, linear: {}, sentry: {} },
       }),
     );
-    git(up, "commit", "-qam", "add sentry");
+    git(up, "add", "-A");
+    git(up, "commit", "-qm", "add fd-c and sentry");
     git(down, "pull", "-q", "--rebase");
 
-    expect(git(down, "status", "--porcelain")).toBe("");
-    expect(cli(down, "status").stdout).toContain("out of date (.mcp.json)");
-    cli(down, "apply");
+    expect(await exists(join(down, ".claude/skills/fd-c"))).toBe(false);
     expect(
       Object.keys((await Bun.file(join(down, ".mcp.json")).json()).mcpServers),
     ).toEqual(["linear", "sentry"]);
+    expect(git(down, "status", "--porcelain")).toBe("");
+    expect(cli(down, "status").stdout).toContain("checkout: applied");
   });
 
   test("restore brings back the committed files", async () => {

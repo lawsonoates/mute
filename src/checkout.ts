@@ -198,7 +198,12 @@ export interface Interface {
   readonly conceal: Effect.Effect<void, Error>;
 }
 
-export const events = ["post-checkout", "pre-commit", "post-commit"] as const;
+export const events = [
+  "post-checkout",
+  "post-merge",
+  "pre-commit",
+  "post-commit",
+] as const;
 
 export class Service extends Context.Service<Service, Interface>()(
   "mute/Checkout",
@@ -212,13 +217,22 @@ export const layer = Layer.effect(
     const path = yield* Path.Path;
 
     const dirs = Effect.fn("Checkout.dirs")(function* () {
-      // A skill is a directory with at least one tracked file under a root.
-      const entries = split(yield* git.run("ls-files", "-z", "--", ...roots))
-        .map((file) => file.split("/"))
-        .filter((parts) => parts.length >= 4)
-        .map((parts) => ({
-          dir: parts.slice(0, 3).join("/"),
-          name: parts[2] ?? "",
+      // A skill is a directory with at least one tracked file under a root, or
+      // a symlink there to a skill the repository keeps somewhere else.
+      const entries = split(
+        yield* git.run("ls-files", "-s", "-z", "--", ...roots),
+      )
+        .map((entry) => ({
+          link: entry.startsWith("120000 "),
+          parts: entry.slice(entry.indexOf("\t") + 1).split("/"),
+        }))
+        .filter(
+          (entry) =>
+            entry.parts.length >= 4 || (entry.parts.length === 3 && entry.link),
+        )
+        .map((entry) => ({
+          dir: entry.parts.slice(0, 3).join("/"),
+          name: entry.parts[2] ?? "",
         }));
       return new Map(
         [...Map.groupBy(entries, (entry) => entry.name)].map(([name, list]) => [
@@ -261,7 +275,10 @@ export const layer = Layer.effect(
 
     const plan = Effect.fn("Checkout.plan")(function* (profile: Profile) {
       const skills = [...(yield* dirs())]
-        .filter(([name]) => matches(profile.skills, name))
+        .filter(
+          ([name]) =>
+            matches(profile.skills, name) && !matches(profile.keep, name),
+        )
         .sort(([a], [b]) => a.localeCompare(b));
       const overlays = (yield* Effect.forEach(yield* tracked(), (config) =>
         Effect.gen(function* () {
@@ -278,8 +295,9 @@ export const layer = Layer.effect(
         }),
       )).flat();
       const patterns = [
+        // No trailing slash, so the pattern also matches a symlinked skill.
         ...skills.flatMap(([, found]) =>
-          found.map((dir) => `!/${escape(dir)}/`),
+          found.map((dir) => `!/${escape(dir)}`),
         ),
         ...(profile.instructions ? instructions : []),
         ...overlays.map((overlay) => `!/${escape(overlay.file)}`),

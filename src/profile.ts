@@ -9,12 +9,19 @@ export const Profile = Schema.Struct({
   instructions: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  /** Skills that stay visible even when an entry in `skills` matches them. */
+  keep: Names,
   mcps: Names,
   skills: Names,
 });
 export type Profile = typeof Profile.Type;
 
-export const empty: Profile = { instructions: false, mcps: [], skills: [] };
+export const empty: Profile = {
+  instructions: false,
+  keep: [],
+  mcps: [],
+  skills: [],
+};
 
 const File = Schema.fromJsonString(Profile, { space: 2 });
 
@@ -96,6 +103,7 @@ export const layer = (root: string) =>
           const target = file(repo);
           const text = yield* Schema.encodeEffect(File)({
             instructions: profile.instructions,
+            keep: [...new Set(profile.keep)].sort(),
             mcps: [...new Set(profile.mcps)].sort(),
             skills: [...new Set(profile.skills)].sort(),
           }).pipe(
