@@ -13,9 +13,10 @@ import { empty, type Profile, Service as Store } from "./profile";
 const quote = (part: string) => `'${part.replaceAll("'", `'\\''`)}'`;
 
 // Points the hook at this exact build, because git clients started outside a
-// shell may not have mute on PATH. A source checkout runs through bun.
+// shell may not have mute on PATH. A source checkout runs through bun, which
+// the npm package installs as bun.exe on every platform.
 const self = () => {
-  const runtime = basename(process.execPath);
+  const runtime = basename(process.execPath, ".exe");
   const parts =
     runtime === "bun" || runtime.startsWith("bun-")
       ? [process.execPath, Bun.main]
