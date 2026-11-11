@@ -18,8 +18,9 @@ If `mute` is not on the `PATH`, tell the user rather than working around the mis
 ## Rules
 
 - Treat muted files as intentionally absent. Leave them off disk, and leave muted instructions unread through `git show` or the remote, unless the user asks.
-- Run `mute apply` after creating a worktree, whatever created it. It is safe to run repeatedly.
+- New worktrees apply the profile through mute's `post-checkout` hook. If `mute status` still reports drift after creating one, run `mute apply`. It is safe to run repeatedly.
 - Run `mute apply` after a pull, merge or rebase when `mute status` reports drift.
+- Muted files reappear on disk while a commit's hooks run, and stay after a commit that fails its hooks. Leave them unread. They are removed after the next successful commit or checkout, or by `mute apply`.
 - Before editing a muted file, run the matching `mute restore` command, and only when the user wants that file changed. Edits to a muted MCP config are otherwise ignored by git.
 - Leave `git sparse-checkout`, `git update-index --skip-worktree` and `sparse.expectFilesOutsideOfPatterns` to mute. Changing them by hand breaks its state.
 - Commit as normal. Hidden files and edited MCP configs never show in `git status` and never reach a commit.
@@ -31,7 +32,6 @@ The user asks for a new worktree to fix a bug, without the fd skills or the Line
 ```bash
 git worktree add ../fix-auth -b fix-auth
 cd ../fix-auth
-mute apply                    # bring the shared profile into the new worktree
 mute skill 'fd-*'             # add to the profile and hide here
 mute mcp linear
 mute status                   # checkout: applied
@@ -41,7 +41,7 @@ mute r mcp linear             # restore before editing a muted config
 mute mcp linear               # mute again once the change is committed
 ```
 
-Other worktrees of the repository keep their old state until `mute apply` runs in them. `mute r` is short for `mute restore`, which takes the exact profile entry, such as `'fd-*'` rather than one skill it matched. `mute restore all` clears the profile.
+Other existing worktrees keep their old state until `mute apply` runs in them or their next checkout. `mute r` is short for `mute restore`, which takes the exact profile entry, such as `'fd-*'` rather than one skill it matched. `mute restore all` clears the profile.
 
 ## Errors
 

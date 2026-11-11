@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { key } from "../src/profile";
@@ -43,7 +43,19 @@ const cli = (cwd: string, ...args: string[]) => {
 };
 
 const write = (path: string, text: string) => Bun.write(path, text);
-const exists = (path: string) => Bun.file(path).exists();
+const exists = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
+
+// Stands in for husky: a pre-commit hook in a hooks directory.
+const hooks = async (cwd: string, script: string) => {
+  const file = join(dir, "hooks/pre-commit");
+  await write(file, `#!/bin/sh\n${script}\n`);
+  await chmod(file, 0o755);
+  git(cwd, "config", "core.hooksPath", join(dir, "hooks"));
+};
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "mute-"));
@@ -142,28 +154,83 @@ describe("mute", () => {
     expect(git(down, "config", "--get", "core.sparseCheckout").trim()).not.toBe(
       "true",
     );
+    expect(git(down, "config", "--local", "--list")).not.toContain("hook.mute");
   });
 
-  test("writes overlays in a worktree that inherited the patterns", async () => {
+  test("writes overlays in a new worktree from the post-checkout hook", async () => {
     const down = join(dir, "down");
     cli(down, "skill", "keep");
     cli(down, "mcp", "chrome-devtools");
+    // A hooks directory, as husky sets up, must not stop the config hook.
+    git(down, "config", "core.hooksPath", ".husky/_");
     const tree = join(dir, "tree");
     git(down, "worktree", "add", "-q", tree);
 
-    // git worktree add copies the sparse patterns but not the overlay files.
     expect(await exists(join(tree, ".claude/skills/keep/SKILL.md"))).toBe(
       false,
     );
-    expect(await exists(join(tree, ".mcp.json"))).toBe(false);
-    expect(cli(tree, "status").stdout).toContain("out of date");
-
-    expect(cli(tree, "apply").code).toBe(0);
     expect(
       Object.keys((await Bun.file(join(tree, ".mcp.json")).json()).mcpServers),
     ).toEqual(["linear"]);
     expect(cli(tree, "status").stdout).toContain("checkout: applied");
     expect(git(tree, "status", "--porcelain")).toBe("");
+  });
+
+  test("the hook warns instead of failing the checkout", async () => {
+    const down = join(dir, "down");
+    cli(down, "mcp", "chrome-devtools");
+    await write(
+      cli(down, "status").stdout.match(/profile: (.+)/u)?.[1] ?? "",
+      "{",
+    );
+    const result = Bun.spawnSync(["git", "switch", "-c", "other"], {
+      cwd: down,
+      env,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr.toString()).toContain("Invalid profile");
+  });
+
+  test("commit checks see muted files, which are hidden again afterwards", async () => {
+    const down = join(dir, "down");
+    cli(down, "skill", "fd-*");
+    cli(down, "mcp", "chrome-devtools");
+    cli(down, "instructions");
+    await hooks(
+      down,
+      "test -f .claude/skills/fd-a/SKILL.md && test -f pkg/AGENTS.md && ! grep -q chrome-devtools .mcp.json",
+    );
+    await write(join(down, "pkg/index.ts"), "x");
+    git(down, "commit", "-qam", "change");
+
+    expect(await exists(join(down, ".claude/skills/fd-a/SKILL.md"))).toBe(
+      false,
+    );
+    expect(await exists(join(down, ".claude/skills/fd-a"))).toBe(false);
+    expect(await exists(join(down, "pkg/AGENTS.md"))).toBe(false);
+    expect(await exists(join(down, "pkg/index.ts"))).toBe(true);
+    expect(git(down, "status", "--porcelain")).toBe("");
+    expect(cli(down, "status").stdout).toContain("checkout: applied");
+  });
+
+  test("the next checkout hides files left by a failed commit", async () => {
+    const down = join(dir, "down");
+    cli(down, "skill", "fd-a");
+    await hooks(down, "exit 1");
+    await write(join(down, "pkg/index.ts"), "x");
+    git(down, "add", "pkg/index.ts");
+    const result = Bun.spawnSync(["git", "commit", "-qm", "change"], {
+      cwd: down,
+      env,
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(await exists(join(down, ".claude/skills/fd-a/SKILL.md"))).toBe(true);
+    expect(git(down, "status", "--porcelain")).toBe("M  pkg/index.ts\n");
+
+    git(down, "switch", "-q", "-c", "other");
+    expect(await exists(join(down, ".claude/skills/fd-a/SKILL.md"))).toBe(
+      false,
+    );
   });
 
   test("applies the shared profile in a worktree from an unmuted checkout", async () => {

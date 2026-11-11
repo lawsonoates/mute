@@ -1,10 +1,32 @@
+import { basename } from "node:path";
 import { Console, Effect, Schema } from "effect";
 import { Argument, Command } from "effect/cli";
-import { Service as Checkout, matches, type Plan, Unmatched } from "./checkout";
+import {
+  Service as Checkout,
+  events,
+  matches,
+  type Plan,
+  Unmatched,
+} from "./checkout";
 import { type Profile, Service as Store } from "./profile";
+
+const quote = (part: string) => `'${part.replaceAll("'", `'\\''`)}'`;
+
+// Points the hook at this exact build, because git clients started outside a
+// shell may not have mute on PATH. A source checkout runs through bun.
+const self = () => {
+  const runtime = basename(process.execPath);
+  const parts =
+    runtime === "bun" || runtime.startsWith("bun-")
+      ? [process.execPath, Bun.main]
+      : [process.execPath];
+
+  return [...parts.map(quote), "hook"].join(" ");
+};
 
 export class NotMuted extends Schema.TaggedError<NotMuted>()("NotMuted", {
   kind: Schema.String,
+
   name: Schema.String,
 }) {
   override get message() {
@@ -49,6 +71,8 @@ const update = <E, R>(
     const next = yield* change(yield* store.load(repo));
     const plan = yield* checkout.apply(next);
     yield* store.save(repo, next);
+    yield* checkout.hook(plan.patterns.length > 0 ? self() : undefined);
+    yield* checkout.conceal;
     yield* Console.log(summary(plan));
   });
 
@@ -114,6 +138,45 @@ const apply = Command.make("apply", {}, () =>
 ).pipe(
   Command.withDescription(
     "Apply the repository's profile to this checkout, such as in a new worktree",
+  ),
+);
+
+// A failing hook fails the checkout or commit itself, so this only warns.
+const hook = Command.make(
+  "hook",
+  // Positional order follows key order, so the event comes first.
+  {
+    event: Argument.Literals("event", events),
+    args: Argument.String("args").pipe(Argument.variadic),
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const checkout = yield* Checkout;
+      if (input.event === "pre-commit") {
+        yield* checkout.reveal;
+        return;
+      }
+      if (input.event === "post-checkout") {
+        const store = yield* Store;
+        const profile = yield* store.load(yield* checkout.repo);
+        const state = yield* checkout.status(profile);
+        if (!state.foreign && state.drift.length > 0) {
+          yield* Console.log(
+            `mute: ${summary(yield* checkout.apply(profile))}`,
+          );
+        }
+      }
+      // Also clears files left by a commit that failed its checks, since
+      // post-commit only runs after a commit succeeds.
+      yield* checkout.conceal;
+    }).pipe(
+      Effect.catch((err) =>
+        Console.error(`mute: ${err.message}. Run \`mute status\`.`),
+      ),
+    ),
+).pipe(
+  Command.withDescription(
+    "Run by the git hooks that mute sets up. Applies the profile after a checkout, and puts hidden files back on disk while a commit's checks run.",
   ),
 );
 
@@ -203,5 +266,13 @@ export const mute = Command.make("mute").pipe(
   Command.withDescription(
     "Hide a repository's skills, MCP servers and agent instructions from a local checkout without changing what you commit",
   ),
-  Command.withSubcommands([skill, mcp, instructions, apply, status, restore]),
+  Command.withSubcommands([
+    skill,
+    mcp,
+    instructions,
+    apply,
+    status,
+    restore,
+    hook,
+  ]),
 );

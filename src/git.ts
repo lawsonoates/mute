@@ -23,6 +23,11 @@ export interface Interface {
   readonly run: (...args: string[]) => Effect.Effect<string, GitError>;
   /** Run git at the worktree root and return the exit code with the output. */
   readonly exec: (...args: string[]) => Effect.Effect<Result, GitError>;
+  /** Like `run`, with `input` written to stdin. */
+  readonly feed: (
+    input: string,
+    ...args: string[]
+  ) => Effect.Effect<string, GitError>;
 }
 
 export class Service extends Context.Service<Service, Interface>()(
@@ -37,9 +42,16 @@ export const layer = Layer.effect(
     const spawn = Effect.fn("Git.spawn")(function* (
       args: string[],
       cwd?: string,
+      input?: string,
     ) {
       const handle = yield* spawner.spawn(
-        ChildProcess.make("git", args, { cwd, stdin: "ignore" }),
+        ChildProcess.make("git", args, {
+          cwd,
+          stdin:
+            input === undefined
+              ? "ignore"
+              : Stream.encodeText(Stream.make(input)),
+        }),
       );
       const [stdout, stderr, code] = yield* Effect.all(
         [
@@ -84,6 +96,13 @@ export const layer = Layer.effect(
 
     return Service.of({
       exec,
+      feed: (input, ...args) =>
+        Effect.flatMap(root, (cwd) =>
+          spawn(args, cwd, input).pipe(
+            translate(args),
+            Effect.flatMap(check(args)),
+          ),
+        ),
       root,
       run: (...args) => exec(...args).pipe(Effect.flatMap(check(args))),
     });

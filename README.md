@@ -42,7 +42,7 @@ mute skill 'fd-*' sync-prep   # hide skills by name or glob
 mute mcp linear notion         # remove MCP servers from the repo's MCP configs
 mute instructions              # hide every AGENTS.md and CLAUDE.md
 mute status                    # show what is muted and whether this checkout matches
-mute apply                     # re-apply the profile, such as after a pull or in a new worktree
+mute apply                     # re-apply the profile, such as after a pull
 
 mute restore skill 'fd-*'      # restore by the exact entry you muted
 mute restore mcp linear
@@ -63,7 +63,9 @@ Names and globs must match something tracked in the repository. `mute status` li
 ## Caveats
 
 - **Current worktree only.** `mute` changes only the worktree you run them in. Other worktrees pick up the profile change after `mute apply`.
-- **New worktrees.** `git worktree add` copies the sparse patterns from the worktree you run it in, but not the edited MCP configs. Run `mute apply` in the new worktree.
+- **Git hooks.** mute adds hooks to the repository's shared git config (`hook.mute`, `hook.mute-pre-commit`, `hook.mute-post-commit`), so every worktree runs them. They run alongside hooks from `core.hooksPath`, such as husky's, and only warn on failure. They point at the mute binary that set them up, so run `mute apply` once after moving that binary. `mute restore all` removes them.
+- **New worktrees.** `git worktree add` copies the sparse patterns but not the edited MCP configs. The `post-checkout` hook applies the profile, so new worktrees and later checkouts match it on their own.
+- **Commit checks.** Hooks such as husky's may read files that mute hides. The `pre-commit` hook writes hidden files back to disk before those hooks run, and the `post-commit` hook removes them again. They stay out of `git status` throughout. If a commit fails its checks, the files stay on disk until the next commit, checkout or `mute apply`. Agents can read them while they are there.
 - **After a pull.** If upstream changes a muted MCP config, your local copy stays as it was. `mute status` reports it as out of date until you run `mute apply`.
 - **Local changes.** mute refuses to edit an MCP config that has uncommitted changes.
 - **Existing sparse checkout.** mute refuses to touch a worktree that uses sparse checkout for anything else.

@@ -186,7 +186,19 @@ export interface Interface {
   readonly servers: Effect.Effect<readonly string[], Error>;
   readonly apply: (profile: Profile) => Effect.Effect<Plan, Error>;
   readonly status: (profile: Profile) => Effect.Effect<Status, Error>;
+  /**
+   * Sets the repository's hooks to run `command` with the hook's event, or
+   * removes them. The hooks live in the shared config, so every worktree runs
+   * them.
+   */
+  readonly hook: (command: string | undefined) => Effect.Effect<void, GitError>;
+  /** Writes hidden files back to disk, such as for a commit's checks. */
+  readonly reveal: Effect.Effect<void, Error>;
+  /** Removes hidden files that `reveal` wrote. */
+  readonly conceal: Effect.Effect<void, Error>;
 }
+
+export const events = ["post-checkout", "pre-commit", "post-commit"] as const;
 
 export class Service extends Context.Service<Service, Interface>()(
   "mute/Checkout",
@@ -302,6 +314,20 @@ export const layer = Layer.effect(
       );
     });
 
+    // Paths outside mute's patterns. Overlays are excluded because they stay on
+    // disk with their servers removed.
+    const hidden = Effect.fn("Checkout.hidden")(function* () {
+      const have = yield* current();
+      if (Option.isNone(have) || !owned(have.value)) {
+        return [];
+      }
+      const overlays = new Set(configs.map((config) => config.file));
+      return split(yield* git.run("ls-files", "-t", "-z"))
+        .filter((entry) => entry.startsWith("S "))
+        .map((entry) => entry.slice(2))
+        .filter((file) => !overlays.has(file));
+    });
+
     const servers = Effect.gen(function* () {
       const found = yield* Effect.forEach(yield* tracked(), (config) =>
         attempt(config.file, () => config.format.servers(config.text)),
@@ -368,9 +394,82 @@ export const layer = Layer.effect(
         );
         return want;
       }),
+      conceal: Effect.gen(function* () {
+        const root = yield* git.root;
+        const files = yield* hidden();
+        yield* Effect.forEach(
+          files,
+          (file) => fs.remove(path.join(root, file), { force: true }),
+          { concurrency: 16, discard: true },
+        );
+        // Git drops directories it leaves empty, so do the same. Deepest
+        // first, so a parent is empty by the time it is checked.
+        const dirs = [
+          ...new Set(
+            files.flatMap((file) =>
+              file
+                .split("/")
+                .slice(0, -1)
+                .map((_, index, parts) => parts.slice(0, index + 1).join("/")),
+            ),
+          ),
+        ].sort((a, b) => b.split("/").length - a.split("/").length);
+        yield* Effect.forEach(
+          dirs,
+          (dir) =>
+            Effect.gen(function* () {
+              const target = path.join(root, dir);
+              const entries = yield* fs
+                .readDirectory(target)
+                .pipe(Effect.orElseSucceed(() => undefined));
+              // Bun's rm refuses a directory without recursive, even an empty one.
+              if (entries?.length === 0) {
+                yield* fs.remove(target, { recursive: true });
+              }
+            }),
+          { discard: true },
+        );
+      }),
+      // Config hooks run alongside the hooks directory, so a repository's own
+      // hooks, such as husky's, still run. Git runs config hooks first, so
+      // pre-commit checks see the files that reveal writes.
+      hook: Effect.fn("Checkout.hook")(function* (command) {
+        for (const event of events) {
+          const name = event === "post-checkout" ? "mute" : `mute-${event}`;
+          if (command === undefined) {
+            yield* git.exec(
+              "config",
+              "--local",
+              "--remove-section",
+              `hook.${name}`,
+            );
+            continue;
+          }
+          yield* git.run("config", "--local", `hook.${name}.event`, event);
+          yield* git.run(
+            "config",
+            "--local",
+            `hook.${name}.command`,
+            `${command} ${event}`,
+          );
+        }
+      }),
       repo: git
         .run("remote", "get-url", "origin")
         .pipe(Effect.map((url) => key(url))),
+      reveal: Effect.gen(function* () {
+        const files = yield* hidden();
+        if (files.length > 0) {
+          yield* git.feed(
+            files.map((file) => `${file}\0`).join(""),
+            "checkout-index",
+            "-f",
+            "-z",
+            "--stdin",
+            "--ignore-skip-worktree-bits",
+          );
+        }
+      }),
       servers,
       skills: dirs().pipe(Effect.map((found) => [...found.keys()].sort())),
       status: Effect.fn("Checkout.status")(function* (profile) {
